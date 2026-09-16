@@ -1,14 +1,8 @@
 {
   "name": "statecraft",
   "version": "1.0.0",
-  "description": "StateCraft - National Governance & Policy Simulation Platform",
-  "main": "server.js",
-  "scripts": {
-    "start": "node server.js",
-    "dev": "node server.js"
-  },
+  "private": true,
   "engines": {
-    "node": ">=18.0.0"
-  },
-  "private": true
+    "node": "20.x"
+  }
 }
