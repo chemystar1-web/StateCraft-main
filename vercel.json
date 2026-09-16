@@ -37,16 +37,6 @@
       "source": "/data/(.*)",
       "destination": "/404",
       "permanent": false
-    },
-    {
-      "source": "/server.py",
-      "destination": "/404",
-      "permanent": false
-    },
-    {
-      "source": "/server.js",
-      "destination": "/404",
-      "permanent": false
     }
   ]
 }
