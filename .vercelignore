@@ -1,0 +1,8 @@
+server.js
+server.py
+scratch/
+__pycache__/
+*.pyc
+*.py
+api/*.py
+start_statecraft.bat
