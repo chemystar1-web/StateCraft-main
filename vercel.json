@@ -1,13 +1,27 @@
 {
   "version": 2,
   "cleanUrls": true,
-  "rewrites": [
+  "builds": [
     {
-      "source": "/api/(.*)",
-      "destination": "/api/index.js"
+      "src": "api/index.js",
+      "use": "@vercel/node"
     },
     {
-      "source": "/api",
+      "src": "*.html",
+      "use": "@vercel/static"
+    },
+    {
+      "src": "css/**",
+      "use": "@vercel/static"
+    },
+    {
+      "src": "js/**",
+      "use": "@vercel/static"
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/api/:path*",
       "destination": "/api/index.js"
     },
     {
@@ -17,11 +31,15 @@
     {
       "source": "/participant",
       "destination": "/participant.html"
+    },
+    {
+      "source": "/",
+      "destination": "/index.html"
     }
   ],
   "headers": [
     {
-      "source": "/api/(.*)",
+      "source": "/api/:path*",
       "headers": [
         { "key": "Cache-Control", "value": "no-cache, no-store, must-revalidate" },
         { "key": "Pragma", "value": "no-cache" },
@@ -34,7 +52,7 @@
   ],
   "redirects": [
     {
-      "source": "/data/(.*)",
+      "source": "/data/:path*",
       "destination": "/404",
       "permanent": false
     }
