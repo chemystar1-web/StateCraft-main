@@ -947,38 +947,41 @@ const StateCraftAPI = {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const serverData = await res.json();
 
-      // Vercel serverless functions lose all writes between cold starts.
-      // The server always returns the seeded default data (0 teams).
-      // MERGE STRATEGY: use server's states (read-only seed data),
-      // but preserve localStorage teams/config/buzzer/round2 as source of truth.
-      const localData = await _getFallbackDb();
+      // On Vercel, serverless functions lose ALL writes between cold starts.
+      // The server's teams array is always empty or stale after a cold start.
+      // FIX: Once localStorage is initialized, it is ALWAYS the authoritative
+      // source for teams, buzzer, round2, and adminConfig.
+      // Only the server's 'states' array (28 Indian states, read-only seed) is trusted.
+      const localRaw = localStorage.getItem('statecraft_live_db');
+      const isInitialized = localRaw !== null;
 
-      // If server has fewer teams than local, server has reset — keep local teams
-      const serverTeams = serverData.teams || [];
-      const localTeams = localData.teams || [];
-      const useLocalTeams = localTeams.length > 0 && serverTeams.length < localTeams.length;
-
-      const merged = {
-        states: (serverData.states && serverData.states.length > 0)
-          ? serverData.states
-          : (localData.states || []),
-        teams: useLocalTeams ? localTeams : serverTeams,
-        adminConfig: serverData.adminConfig || localData.adminConfig || { adminPasscode: 'akshita' },
-        buzzer: serverData.buzzer || localData.buzzer || { enabled: false, showResults: false, round: 'Round 1', buzzes: [] },
-        round2: serverData.round2 || localData.round2 || { enabled: false, title: 'Round 2', teamSelections: {} }
-      };
-
-      if (useLocalTeams) {
-        console.warn('[StateCraft] Server lost team data (Vercel cold start). Preserving local teams.');
+      if (isInitialized) {
+        // Local DB exists — use local teams, merge in fresh server states
+        let localData;
+        try { localData = JSON.parse(localRaw); } catch(e) { localData = {}; }
+        const merged = {
+          states: (serverData.states && serverData.states.length > 0)
+            ? serverData.states
+            : (localData.states || []),
+          teams: localData.teams || [],
+          adminConfig: localData.adminConfig || serverData.adminConfig || { adminPasscode: 'akshita' },
+          buzzer: localData.buzzer || serverData.buzzer || { enabled: false, showResults: false, round: 'Round 1', buzzes: [] },
+          round2: localData.round2 || serverData.round2 || { enabled: false, title: 'Round 2', teamSelections: {} }
+        };
+        // Always update states from server (they are read-only seed data and can be updated)
+        _saveFallbackDb(merged);
+        return merged;
+      } else {
+        // First load — initialize localStorage from server data
+        _saveFallbackDb(serverData);
+        return serverData;
       }
-
-      _saveFallbackDb(merged);
-      return merged;
     } catch (err) {
       console.warn('API error, using cached data fallback:', err);
       return await _getFallbackDb();
     }
   },
+
 
   async adminLogin(passcode) {
     try {
@@ -1132,7 +1135,13 @@ const StateCraftAPI = {
       });
       if (res.ok) {
         const result = await res.json();
-        if (result.success) broadcastStateChange('POINTS_AWARDED', { teamId, pointsChange, team: result.team });
+        if (result.success) {
+          // Also update localStorage so points persist across Vercel cold starts
+          const db = await _getFallbackDb();
+          const idx = (db.teams || []).findIndex(t => t.id === teamId);
+          if (idx !== -1) { db.teams[idx] = result.team; _saveFallbackDb(db); }
+          broadcastStateChange('POINTS_AWARDED', { teamId, pointsChange, team: result.team });
+        }
         return result;
       }
     } catch (e) {}
@@ -1155,6 +1164,7 @@ const StateCraftAPI = {
     }
     return { success: false, error: "Team not found" };
   },
+
 
   async updateStateCriteria(stateId, criteriaUpdates) {
     try {
