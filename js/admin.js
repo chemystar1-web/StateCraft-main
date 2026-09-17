@@ -8,6 +8,15 @@ let stateCraftData = {
   adminConfig: {}
 };
 
+// Mutation lock: prevents auto-poll from overwriting data for 15s after any write action
+let _mutationLockUntil = 0;
+function acquireMutationLock() {
+  _mutationLockUntil = Date.now() + 15000;
+}
+function isMutationLocked() {
+  return Date.now() < _mutationLockUntil;
+}
+
 let activeRegion = 'ALL';
 let stateSearchQuery = '';
 let currentlyEditingState = null;
@@ -116,6 +125,8 @@ async function initAdminPortal() {
 }
 
 async function refreshAdminData(showLoading = false) {
+  // Don't overwrite data during or right after a write operation
+  if (!showLoading && isMutationLocked()) return;
   try {
     stateCraftData = await StateCraftAPI.fetchAllData();
     renderSummaryStats();
@@ -337,9 +348,10 @@ async function handleCreateTeam() {
     });
 
     if (res.success) {
+      acquireMutationLock();
       showToast(`Team "${name}" created successfully!`, 'success');
       document.getElementById('add-team-modal').classList.remove('active');
-      await refreshAdminData();
+      await refreshAdminData(true);
     } else {
       errorEl.textContent = res.error || 'Failed to create team';
       errorEl.style.display = 'block';
@@ -386,9 +398,10 @@ async function handleSaveTeamEdit() {
     });
 
     if (res.success) {
+      acquireMutationLock();
       showToast(`Team "${name}" updated and state allocated!`, 'success');
       document.getElementById('edit-team-modal').classList.remove('active');
-      await refreshAdminData();
+      await refreshAdminData(true);
     } else {
       errorEl.textContent = res.error || 'Failed to update team';
       errorEl.style.display = 'block';
@@ -399,21 +412,33 @@ async function handleSaveTeamEdit() {
   }
 }
 
-// Delete Team
-async function confirmDeleteTeam(teamId, teamName) {
-  if (confirm(`Are you sure you want to delete "${teamName}"?\nTheir allocated state will become available again.`)) {
-    try {
-      const res = await StateCraftAPI.deleteTeam(teamId);
-      if (res.success) {
-        showToast(`Team "${teamName}" deleted.`, 'info');
-        await refreshAdminData();
-      } else {
-        showToast(res.error || 'Could not delete team', 'error');
+// Delete Team — uses custom modal instead of browser confirm()
+function confirmDeleteTeam(teamId, teamName) {
+  showConfirmDialog(
+    '🗑️ Delete Team',
+    `Are you sure you want to permanently delete <strong>${escapeHtml(teamName)}</strong>?<br><br>Their allocated state will become available again. This action cannot be undone.`,
+    'Delete Team',
+    'danger',
+    async () => {
+      try {
+        const res = await StateCraftAPI.deleteTeam(teamId);
+        if (res.success) {
+          acquireMutationLock();
+          // Optimistically remove from local state so it disappears instantly
+          stateCraftData.teams = (stateCraftData.teams || []).filter(t => t.id !== teamId);
+          renderTeamsTable();
+          renderSummaryStats();
+          populateStateDropdowns();
+          showToast(`Team "${teamName}" deleted.`, 'info');
+          // Full refresh after lock expires handled by next poll cycle
+        } else {
+          showToast(res.error || 'Could not delete team', 'error');
+        }
+      } catch (err) {
+        showToast('Error deleting team from server.', 'error');
       }
-    } catch (err) {
-      showToast('Error deleting team from server.', 'error');
     }
-  }
+  );
 }
 
 // Scoring / Points Management
@@ -501,9 +526,10 @@ async function handleAwardPoints() {
   try {
     const res = await StateCraftAPI.awardPoints(currentlyScoringTeam.id, pointsChange, category, reason);
     if (res.success) {
+      acquireMutationLock();
       showToast(`${pointsChange > 0 ? '+' : ''}${pointsChange} points given to ${currentlyScoringTeam.name}!`, 'success');
       document.getElementById('award-points-modal').classList.remove('active');
-      await refreshAdminData();
+      await refreshAdminData(true);
     } else {
       errorEl.textContent = res.error || 'Failed to award points';
       errorEl.style.display = 'block';
@@ -1961,32 +1987,48 @@ function renderAdminRound2CompletedTable() {
   }).join('');
 }
 
-async function handleAdminClearCompletedRound2() {
-  if (!confirm('Are you sure you want to clear all completed Round 2 records?')) return;
-  try {
-    const res = await StateCraftAPI.resetRound2();
-    if (res.success) {
-      currentRound2State = res.round2;
-      showToast('Completed Round 2 records cleared.', 'info');
-      renderAdminRound2UI();
+function handleAdminClearCompletedRound2() {
+  showConfirmDialog(
+    '🗑️ Clear All Round 2 Records',
+    'Are you sure you want to clear <strong>all completed Round 2 records</strong>? This will allow all delegations to submit again.',
+    'Clear All Records',
+    'danger',
+    async () => {
+      try {
+        const res = await StateCraftAPI.resetRound2();
+        if (res.success) {
+          acquireMutationLock();
+          currentRound2State = res.round2;
+          showToast('Completed Round 2 records cleared.', 'info');
+          renderAdminRound2UI();
+        }
+      } catch (err) {
+        showToast('Failed to clear records', 'error');
+      }
     }
-  } catch (err) {
-    showToast('Failed to clear records', 'error');
-  }
+  );
 }
 
-async function handleAdminResetTeamRound2(teamId) {
-  if (!confirm('Reset Round 2 selection for this delegation? They will be permitted to play again.')) return;
-  try {
-    const res = await StateCraftAPI.resetRound2(teamId);
-    if (res.success) {
-      currentRound2State = res.round2;
-      showToast('Delegation Round 2 selection cleared.', 'info');
-      renderAdminRound2UI();
+function handleAdminResetTeamRound2(teamId) {
+  showConfirmDialog(
+    '🔄 Reset Delegation Round 2',
+    'Reset Round 2 selection for this delegation? They will be permitted to play again.',
+    'Reset Selection',
+    'danger',
+    async () => {
+      try {
+        const res = await StateCraftAPI.resetRound2(teamId);
+        if (res.success) {
+          acquireMutationLock();
+          currentRound2State = res.round2;
+          showToast('Delegation Round 2 selection cleared.', 'info');
+          renderAdminRound2UI();
+        }
+      } catch (err) {
+        showToast('Failed to reset delegation selection', 'error');
+      }
     }
-  } catch (err) {
-    showToast('Failed to reset delegation selection', 'error');
-  }
+  );
 }
 
 /* ==========================================================================
@@ -2342,9 +2384,10 @@ async function executeMarketResetAction() {
     const res = await StateCraftAPI.resetMarket(targetTeamId, refund);
 
     if (res.success) {
+      acquireMutationLock();
       showToast(res.message || 'Market reset completed successfully', 'success');
       closeResetTeamMarketModal();
-      await refreshAdminData(false);
+      await refreshAdminData(true);
     } else {
       showToast(res.error || 'Reset failed', 'error');
     }
@@ -2357,3 +2400,65 @@ async function executeMarketResetAction() {
 }
 
 
+// ==========================================================================
+// CUSTOM CONFIRMATION DIALOG (replaces browser confirm())
+// ==========================================================================
+
+function showConfirmDialog(title, message, confirmLabel, confirmStyle, onConfirm) {
+  // Remove any existing confirm dialog
+  const existing = document.getElementById('sc-confirm-dialog');
+  if (existing) existing.remove();
+
+  const btnClass = confirmStyle === 'danger' ? 'btn-danger' : 'btn-primary';
+
+  const overlay = document.createElement('div');
+  overlay.id = 'sc-confirm-dialog';
+  overlay.style.cssText = [
+    'position: fixed', 'inset: 0', 'z-index: 9999',
+    'display: flex', 'align-items: center', 'justify-content: center',
+    'background: rgba(2, 6, 23, 0.75)', 'backdrop-filter: blur(6px)',
+    'padding: 1rem', 'animation: fadeIn 0.15s ease'
+  ].join(';');
+
+  overlay.innerHTML = `
+    <div style="
+      background: linear-gradient(135deg, #0F172A 0%, #1E293B 100%);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 16px;
+      padding: 2rem;
+      max-width: 440px;
+      width: 100%;
+      box-shadow: 0 25px 60px rgba(0,0,0,0.6);
+      animation: slideUp 0.2s ease;
+    ">
+      <div style="display:flex; align-items:center; gap:0.75rem; margin-bottom:1.25rem;">
+        <div style="width:40px; height:40px; border-radius:50%; background:rgba(239,68,68,0.15); display:flex; align-items:center; justify-content:center; font-size:1.2rem; flex-shrink:0;">
+          ⚠️
+        </div>
+        <h3 style="margin:0; font-size:1.1rem; color:#FFFFFF;">${title}</h3>
+      </div>
+      <p style="color:#94A3B8; font-size:0.9rem; line-height:1.6; margin:0 0 1.75rem 0;">${message}</p>
+      <div style="display:flex; gap:0.75rem; justify-content:flex-end;">
+        <button id="sc-confirm-cancel" class="btn btn-secondary btn-sm" style="min-width:90px;">Cancel</button>
+        <button id="sc-confirm-ok" class="btn ${btnClass} btn-sm" style="min-width:120px;">${confirmLabel}</button>
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(overlay);
+
+  // Close handlers
+  const close = () => overlay.remove();
+  document.getElementById('sc-confirm-cancel').addEventListener('click', close);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  document.getElementById('sc-confirm-ok').addEventListener('click', () => {
+    close();
+    onConfirm();
+  });
+
+  // Focus the cancel button by default for safety
+  setTimeout(() => {
+    const cancelBtn = document.getElementById('sc-confirm-cancel');
+    if (cancelBtn) cancelBtn.focus();
+  }, 50);
+}
