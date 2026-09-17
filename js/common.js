@@ -945,9 +945,35 @@ const StateCraftAPI = {
     try {
       const res = await fetch(`${STATECRAFT_API_BASE}/api/data`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      _saveFallbackDb(data);
-      return data;
+      const serverData = await res.json();
+
+      // Vercel serverless functions lose all writes between cold starts.
+      // The server always returns the seeded default data (0 teams).
+      // MERGE STRATEGY: use server's states (read-only seed data),
+      // but preserve localStorage teams/config/buzzer/round2 as source of truth.
+      const localData = await _getFallbackDb();
+
+      // If server has fewer teams than local, server has reset — keep local teams
+      const serverTeams = serverData.teams || [];
+      const localTeams = localData.teams || [];
+      const useLocalTeams = localTeams.length > 0 && serverTeams.length < localTeams.length;
+
+      const merged = {
+        states: (serverData.states && serverData.states.length > 0)
+          ? serverData.states
+          : (localData.states || []),
+        teams: useLocalTeams ? localTeams : serverTeams,
+        adminConfig: serverData.adminConfig || localData.adminConfig || { adminPasscode: 'akshita' },
+        buzzer: serverData.buzzer || localData.buzzer || { enabled: false, showResults: false, round: 'Round 1', buzzes: [] },
+        round2: serverData.round2 || localData.round2 || { enabled: false, title: 'Round 2', teamSelections: {} }
+      };
+
+      if (useLocalTeams) {
+        console.warn('[StateCraft] Server lost team data (Vercel cold start). Preserving local teams.');
+      }
+
+      _saveFallbackDb(merged);
+      return merged;
     } catch (err) {
       console.warn('API error, using cached data fallback:', err);
       return await _getFallbackDb();
@@ -1009,7 +1035,16 @@ const StateCraftAPI = {
       });
       if (res.ok) {
         const result = await res.json();
-        if (result.success) broadcastStateChange('TEAM_CREATED', result.team);
+        if (result.success) {
+          // Also persist to localStorage so team survives Vercel cold start
+          const db = await _getFallbackDb();
+          db.teams = db.teams || [];
+          if (!db.teams.find(t => t.id === result.team.id)) {
+            db.teams.push(result.team);
+            _saveFallbackDb(db);
+          }
+          broadcastStateChange('TEAM_CREATED', result.team);
+        }
         return result;
       }
     } catch (e) {}
@@ -1041,7 +1076,13 @@ const StateCraftAPI = {
       });
       if (res.ok) {
         const result = await res.json();
-        if (result.success) broadcastStateChange('TEAM_UPDATED', result.team);
+        if (result.success) {
+          // Also persist to localStorage
+          const db = await _getFallbackDb();
+          const idx = (db.teams || []).findIndex(t => t.id === teamId);
+          if (idx !== -1) { db.teams[idx] = result.team; _saveFallbackDb(db); }
+          broadcastStateChange('TEAM_UPDATED', result.team);
+        }
         return result;
       }
     } catch (e) {}
@@ -1065,7 +1106,13 @@ const StateCraftAPI = {
       });
       if (res.ok) {
         const result = await res.json();
-        if (result.success) broadcastStateChange('TEAM_DELETED', { teamId });
+        if (result.success) {
+          // Also remove from localStorage so it stays gone after cold start
+          const db = await _getFallbackDb();
+          db.teams = (db.teams || []).filter(t => t.id !== teamId);
+          _saveFallbackDb(db);
+          broadcastStateChange('TEAM_DELETED', { teamId });
+        }
         return result;
       }
     } catch (e) {}
